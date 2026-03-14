@@ -1,6 +1,9 @@
 # rdmatop
 
-A real-time TUI monitor for monitoring RDMA network interfaces — `htop`, but for RDMA traffic.
+[![Crates.io](https://img.shields.io/crates/v/rdmatop)](https://crates.io/crates/rdmatop)
+[![License](https://img.shields.io/crates/l/rdmatop)](LICENSE)
+
+`htop`, but for RDMA traffic — a real-time TUI monitor for RDMA network interfaces.
 
 <p align="center">
   <img src="images/rdmatop.gif" alt="rdmatop" width="800">
@@ -10,15 +13,27 @@ Monitors per-device throughput (Gbps, packets/s, drops), RDMA read/write counter
 retransmits, health events, and shows which processes are using each RDMA device —
 all via RDMA netlink, the same interface used by [rdma statistic](https://github.com/iproute2/iproute2/blob/main/rdma/stat.c).
 
-## Build
+## Requirements
+
+- **Linux** (netlink-based — macOS/Windows are not supported)
+- RDMA-capable NICs (e.g., Mellanox/NVIDIA ConnectX, AWS EFA)
+
+## Installation
+
+```bash
+cargo install rdmatop
+```
+
+Or build from source:
 
 ```bash
 make         # cargo build
 make install # cargo install
-make fmt     # cargo fmt
-make clean   # cargo clean
+```
 
-# run rdmatop to monitor RDMA status
+## Usage
+
+```bash
 rdmatop
 ```
 
