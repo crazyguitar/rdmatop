@@ -27,7 +27,7 @@ rdmatop
 Use `rdmatop` to monitor RDMA traffic while running GPU
 communication benchmarks:
 
-- [NCCL Tests](examples/nccl/) — collective communication
+- [NCCL](examples/nccl/) — collective communication
 - [NIXL](examples/nixl/) — point-to-point KV cache transfer
 - [NVSHMEM](examples/nvshmem/) — one-sided GPU communication
 - [RDMA Statistics](examples/rdma/) — shell-based RDMA stats
