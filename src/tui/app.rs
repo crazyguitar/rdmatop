@@ -1,0 +1,365 @@
+use super::theme::Theme;
+use crate::stat::{self, PortStat};
+use std::time::Instant;
+
+use std::collections::HashMap;
+
+/// Per-port computed throughput (delta / interval).
+#[derive(Clone, Debug)]
+pub struct PortThroughput {
+    pub dev_name: String,
+    pub port: u32,
+    pub tx_gbps: f64,
+    pub rx_gbps: f64,
+    pub tx_pkts_per_sec: f64,
+    pub rx_pkts_per_sec: f64,
+    pub rx_drops_per_sec: f64,
+    pub counter_rates: Vec<CounterRate>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CounterRate {
+    pub name: String,
+    pub delta: u64,
+    pub rate: f64,
+    pub is_bytes: bool,
+}
+
+pub struct App {
+    pub should_quit: bool,
+    pub throughputs: Vec<PortThroughput>,
+    pub selected_row: usize,
+    pub show_detail: bool,
+    pub show_help: bool,
+    pub processes: Vec<stat::ProcessRdmaInfo>,
+    pub detail_scroll: u16,
+    pub detail_max_scroll: u16,
+    pub theme: Theme,
+    pub sysinfo: SysInfo,
+    pub history: HashMap<String, DeviceHistory>,
+    pub cpu_history: Vec<f32>,
+    prev_stats: Vec<PortStat>,
+    prev_time: Instant,
+    pub elapsed: f64,
+}
+
+const HISTORY_LEN: usize = 60;
+
+#[derive(Clone, Debug)]
+pub struct DeviceHistory {
+    pub tx: Vec<f64>,
+    pub rx: Vec<f64>,
+}
+
+impl DeviceHistory {
+    fn new() -> Self {
+        Self {
+            tx: Vec::with_capacity(HISTORY_LEN),
+            rx: Vec::with_capacity(HISTORY_LEN),
+        }
+    }
+
+    fn push(&mut self, tx: f64, rx: f64) {
+        if self.tx.len() >= HISTORY_LEN {
+            self.tx.remove(0);
+            self.rx.remove(0);
+        }
+        self.tx.push(tx);
+        self.rx.push(rx);
+    }
+}
+
+#[derive(Clone)]
+pub struct SysInfo {
+    pub hostname: String,
+    pub uptime: String,
+    pub load_avg: String,
+    pub mem_total_mb: u64,
+    pub mem_used_mb: u64,
+    pub mem_pct: f32,
+    pub cpu_pct: f32,
+}
+
+impl App {
+    pub fn new() -> Self {
+        let stats = stat::read_all_stats().unwrap_or_default();
+        Self {
+            should_quit: false,
+            throughputs: Vec::new(),
+            selected_row: 0,
+            theme: Theme::Default,
+            show_detail: false,
+            show_help: false,
+            processes: Vec::new(),
+            detail_scroll: 0,
+            detail_max_scroll: 0,
+            sysinfo: read_sysinfo(),
+            history: HashMap::new(),
+            cpu_history: Vec::with_capacity(HISTORY_LEN),
+            prev_stats: stats,
+            prev_time: Instant::now(),
+            elapsed: 1.0,
+        }
+    }
+
+    pub fn refresh_stats(&mut self) {
+        let curr = match stat::read_all_stats() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let elapsed = self.prev_time.elapsed().as_secs_f64();
+        if elapsed < 0.1 {
+            return;
+        }
+        self.elapsed = elapsed;
+        self.throughputs = compute_throughputs(&self.prev_stats, &curr, elapsed);
+        self.prev_stats = curr;
+        self.prev_time = Instant::now();
+        self.clamp_selection();
+        self.update_history();
+        self.refresh_processes();
+        self.sysinfo = read_sysinfo();
+        if self.cpu_history.len() >= HISTORY_LEN {
+            self.cpu_history.remove(0);
+        }
+        self.cpu_history.push(self.sysinfo.cpu_pct);
+    }
+
+    fn update_history(&mut self) {
+        for t in &self.throughputs {
+            self.history
+                .entry(t.dev_name.clone())
+                .or_insert_with(DeviceHistory::new)
+                .push(t.tx_gbps, t.rx_gbps);
+        }
+    }
+
+    fn refresh_processes(&mut self) {
+        if let Ok(qps) = stat::read_all_qps() {
+            self.processes = stat::aggregate_by_process(&qps);
+        }
+    }
+
+    pub fn move_up(&mut self) {
+        self.selected_row = self.selected_row.saturating_sub(1);
+    }
+
+    pub fn move_down(&mut self) {
+        if !self.throughputs.is_empty() && self.selected_row < self.throughputs.len() - 1 {
+            self.selected_row += 1;
+        }
+    }
+
+    pub fn toggle_detail(&mut self) {
+        self.show_detail = !self.show_detail;
+        self.detail_scroll = 0;
+    }
+
+    pub fn detail_scroll_up(&mut self) {
+        if self.detail_scroll > 0 {
+            self.detail_scroll -= 1;
+        } else if self.selected_row > 0 {
+            self.selected_row -= 1;
+            self.detail_scroll = 0;
+        }
+    }
+
+    pub fn detail_scroll_down(&mut self, max: u16) {
+        if self.detail_scroll < max {
+            self.detail_scroll += 1;
+        } else if !self.throughputs.is_empty() && self.selected_row < self.throughputs.len() - 1 {
+            self.selected_row += 1;
+            self.detail_scroll = 0;
+        }
+    }
+
+    pub fn cycle_theme(&mut self) {
+        self.theme = self.theme.next();
+    }
+
+    pub fn selected_throughput(&self) -> Option<&PortThroughput> {
+        self.throughputs.get(self.selected_row)
+    }
+
+    pub fn selected_device_processes(&self) -> Vec<&stat::ProcessRdmaInfo> {
+        let Some(t) = self.selected_throughput() else {
+            return Vec::new();
+        };
+        self.processes
+            .iter()
+            .filter(|p| p.dev_name == t.dev_name)
+            .collect()
+    }
+
+    fn clamp_selection(&mut self) {
+        if !self.throughputs.is_empty() && self.selected_row >= self.throughputs.len() {
+            self.selected_row = self.throughputs.len() - 1;
+        }
+    }
+}
+
+fn read_file_trimmed(path: &str) -> String {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+
+fn read_hostname() -> String {
+    let h = read_file_trimmed("/etc/hostname");
+    if h.is_empty() {
+        "unknown".into()
+    } else {
+        h
+    }
+}
+
+fn read_uptime() -> String {
+    let secs: u64 = read_file_trimmed("/proc/uptime")
+        .split_whitespace()
+        .next()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(0.0) as u64;
+    format!(
+        "up {} days, {}:{:02}",
+        secs / 86400,
+        (secs % 86400) / 3600,
+        (secs % 3600) / 60
+    )
+}
+
+fn read_load_avg() -> String {
+    read_file_trimmed("/proc/loadavg")
+        .split_whitespace()
+        .take(3)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn read_meminfo() -> (u64, u64) {
+    let content = read_file_trimmed("/proc/meminfo");
+    let mut total = 0u64;
+    let mut avail = 0u64;
+    for line in content.lines() {
+        let val = || {
+            line.split_whitespace()
+                .nth(1)
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        if line.starts_with("MemTotal:") {
+            total = val();
+        }
+        if line.starts_with("MemAvailable:") {
+            avail = val();
+        }
+    }
+    (total / 1024, (total.saturating_sub(avail)) / 1024)
+}
+
+fn read_cpu_usage() -> f32 {
+    let content = read_file_trimmed("/proc/stat");
+    let first = content.lines().next().unwrap_or("");
+    let vals: Vec<u64> = first
+        .split_whitespace()
+        .skip(1)
+        .filter_map(|v| v.parse().ok())
+        .collect();
+    if vals.len() < 4 {
+        return 0.0;
+    }
+    let idle = vals[3];
+    let total: u64 = vals.iter().sum();
+    if total == 0 {
+        return 0.0;
+    }
+    ((total - idle) as f32 / total as f32) * 100.0
+}
+
+fn read_sysinfo() -> SysInfo {
+    let (mem_total_mb, mem_used_mb) = read_meminfo();
+    let mem_pct = if mem_total_mb > 0 {
+        (mem_used_mb as f32 / mem_total_mb as f32) * 100.0
+    } else {
+        0.0
+    };
+    SysInfo {
+        hostname: read_hostname(),
+        uptime: read_uptime(),
+        load_avg: read_load_avg(),
+        mem_total_mb,
+        mem_used_mb,
+        mem_pct,
+        cpu_pct: read_cpu_usage(),
+    }
+}
+
+fn find_prev<'a>(prev: &'a [PortStat], dev: &str, port: u32) -> Option<&'a PortStat> {
+    prev.iter().find(|s| s.dev_name == dev && s.port == port)
+}
+
+fn bytes_to_gbps(bytes_per_sec: f64) -> f64 {
+    bytes_per_sec * 8.0 / 1_000_000_000.0
+}
+
+fn is_bytes_counter(name: &str) -> bool {
+    name.ends_with("_bytes") || name.ends_with("_resp_bytes") || name.ends_with("_recv_bytes")
+}
+
+fn compute_counter_rate(
+    counter_name: &str,
+    curr_val: u64,
+    prev: Option<&PortStat>,
+    elapsed: f64,
+) -> CounterRate {
+    let prev_val = prev
+        .and_then(|p| p.counter_value(counter_name))
+        .unwrap_or(0);
+    let delta = curr_val.saturating_sub(prev_val);
+    CounterRate {
+        name: counter_name.to_string(),
+        delta,
+        rate: delta as f64 / elapsed,
+        is_bytes: is_bytes_counter(counter_name),
+    }
+}
+
+fn rate_by_name(rates: &[CounterRate], name: &str) -> f64 {
+    rates
+        .iter()
+        .find(|r| r.name == name)
+        .map(|r| r.rate)
+        .unwrap_or(0.0)
+}
+
+fn compute_port_throughput(
+    curr: &PortStat,
+    prev: Option<&PortStat>,
+    elapsed: f64,
+) -> PortThroughput {
+    let counter_rates: Vec<CounterRate> = curr
+        .counters
+        .iter()
+        .map(|c| compute_counter_rate(&c.name, c.value, prev, elapsed))
+        .collect();
+
+    let tx_bps = rate_by_name(&counter_rates, "tx_bytes");
+    let rx_bps = rate_by_name(&counter_rates, "rx_bytes");
+
+    PortThroughput {
+        dev_name: curr.dev_name.clone(),
+        port: curr.port,
+        tx_gbps: bytes_to_gbps(tx_bps),
+        rx_gbps: bytes_to_gbps(rx_bps),
+        tx_pkts_per_sec: rate_by_name(&counter_rates, "tx_pkts"),
+        rx_pkts_per_sec: rate_by_name(&counter_rates, "rx_pkts"),
+        rx_drops_per_sec: rate_by_name(&counter_rates, "rx_drops"),
+        counter_rates,
+    }
+}
+
+fn compute_throughputs(prev: &[PortStat], curr: &[PortStat], elapsed: f64) -> Vec<PortThroughput> {
+    curr.iter()
+        .map(|c| compute_port_throughput(c, find_prev(prev, &c.dev_name, c.port), elapsed))
+        .collect()
+}
