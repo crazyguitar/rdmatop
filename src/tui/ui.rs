@@ -334,13 +334,13 @@ fn build_device_header(
 }
 
 fn append_active_counters(lines: &mut Vec<Line<'static>>, t: &PortThroughput, tc: &ThemeColors) {
-    let active: Vec<_> = t
+    let counters: Vec<_> = t
         .counter_rates
         .iter()
-        .filter(|r| DETAIL_COUNTERS.contains(&r.name.as_str()) && r.delta > 0)
+        .filter(|r| DETAIL_COUNTERS.contains(&r.name.as_str()))
         .collect();
-    if !active.is_empty() {
-        for r in &active {
+    if !counters.is_empty() {
+        for r in &counters {
             lines.push(counter_rate_line(r, tc));
         }
         lines.push(Line::from(""));
