@@ -41,7 +41,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(6),
+            Constraint::Length(5),
             Constraint::Min(5),
             Constraint::Length(1),
         ])
