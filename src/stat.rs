@@ -86,25 +86,6 @@ fn parse_port_stat(nlmsg: &NlMsg) -> Option<PortStat> {
     (!stat.dev_name.is_empty()).then_some(stat)
 }
 
-fn collect_responses<T>(
-    sock: &NlSocket,
-    msg: Vec<u8>,
-    parse: fn(&NlMsg) -> Option<T>,
-) -> io::Result<Vec<T>> {
-    let mut results = Vec::new();
-    for buf in sock.request(msg)? {
-        for nlmsg in NlMsgIter::new(&buf) {
-            if nlmsg.is_done() || nlmsg.is_error() {
-                continue;
-            }
-            if let Some(item) = parse(&nlmsg) {
-                results.push(item);
-            }
-        }
-    }
-    Ok(results)
-}
-
 fn enumerate_devices(sock: &NlSocket) -> io::Result<Vec<RdmaDev>> {
     let msg = NlMsgBuilder::new(
         rdma_nl_get_type(RDMA_NL_NLDEV, RDMA_NLDEV_CMD_GET),
@@ -135,10 +116,10 @@ fn query_port_stats(
 /// Query all RDMA device/port hw counters via netlink.
 /// Query all RDMA device/port hw counters via netlink.
 pub fn read_all_stats() -> io::Result<Vec<PortStat>> {
-    let sock = NlSocket::open()?;
+    let sock = NlSocket::open(NETLINK_RDMA)?;
     let devs = enumerate_devices(&sock)?;
 
-    let sock = NlSocket::open()?;
+    let sock = NlSocket::open(NETLINK_RDMA)?;
     let mut all = Vec::new();
     let mut seq = 100u32;
     for dev in &devs {
@@ -227,14 +208,14 @@ fn read_proc_comm(pid: u32) -> String {
 /// Query all RDMA QPs via netlink (like `rdma resource show qp`).
 /// Query all RDMA QPs via netlink, returning PID and device mappings.
 pub fn read_all_qps() -> io::Result<Vec<QpInfo>> {
-    let sock = NlSocket::open()?;
+    let sock = NlSocket::open(NETLINK_RDMA)?;
     let devs = enumerate_devices(&sock)?;
     drop(sock);
 
     let mut all = Vec::new();
     let mut seq = 200u32;
     for dev in &devs {
-        let sock = NlSocket::open()?;
+        let sock = NlSocket::open(NETLINK_RDMA)?;
         let msg = NlMsgBuilder::new(
             rdma_nl_get_type(RDMA_NL_NLDEV, RDMA_NLDEV_CMD_RES_QP_GET),
             NLM_F_REQUEST | NLM_F_ACK | NLM_F_DUMP,

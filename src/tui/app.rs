@@ -1,4 +1,5 @@
 use super::theme::Theme;
+use crate::net::{self, IfStats, NetRate};
 use crate::stat::{self, PortStat};
 use std::time::Instant;
 
@@ -39,6 +40,7 @@ pub struct App {
     pub history: HashMap<String, DeviceHistory>,
     pub cpu_history: Vec<f32>,
     prev_stats: Vec<PortStat>,
+    prev_ifstats: Vec<IfStats>,
     prev_time: Instant,
     pub elapsed: f64,
 }
@@ -78,11 +80,13 @@ pub struct SysInfo {
     pub mem_used_mb: u64,
     pub mem_pct: f32,
     pub cpu_pct: f32,
+    pub net: NetRate,
 }
 
 impl App {
     pub fn new() -> Self {
         let stats = stat::read_all_stats().unwrap_or_default();
+        let ifstats = net::read_all_ifstats().unwrap_or_default();
         Self {
             should_quit: false,
             throughputs: Vec::new(),
@@ -93,10 +97,11 @@ impl App {
             processes: Vec::new(),
             detail_scroll: 0,
             detail_max_scroll: 0,
-            sysinfo: read_sysinfo(),
+            sysinfo: read_sysinfo(NetRate::default()),
             history: HashMap::new(),
             cpu_history: Vec::with_capacity(HISTORY_LEN),
             prev_stats: stats,
+            prev_ifstats: ifstats,
             prev_time: Instant::now(),
             elapsed: 1.0,
         }
@@ -114,11 +119,16 @@ impl App {
         self.elapsed = elapsed;
         self.throughputs = compute_throughputs(&self.prev_stats, &curr, elapsed);
         self.prev_stats = curr;
+
+        let curr_if = net::read_all_ifstats().unwrap_or_default();
+        let net_rate = net::compute_net_rate(&self.prev_ifstats, &curr_if, elapsed);
+        self.prev_ifstats = curr_if;
+
         self.prev_time = Instant::now();
         self.clamp_selection();
         self.update_history();
         self.refresh_processes();
-        self.sysinfo = read_sysinfo();
+        self.sysinfo = read_sysinfo(net_rate);
         if self.cpu_history.len() >= HISTORY_LEN {
             self.cpu_history.remove(0);
         }
@@ -276,7 +286,7 @@ fn read_cpu_usage() -> f32 {
     ((total - idle) as f32 / total as f32) * 100.0
 }
 
-fn read_sysinfo() -> SysInfo {
+fn read_sysinfo(net: NetRate) -> SysInfo {
     let (mem_total_mb, mem_used_mb) = read_meminfo();
     let mem_pct = if mem_total_mb > 0 {
         (mem_used_mb as f32 / mem_total_mb as f32) * 100.0
@@ -291,6 +301,7 @@ fn read_sysinfo() -> SysInfo {
         mem_used_mb,
         mem_pct,
         cpu_pct: read_cpu_usage(),
+        net,
     }
 }
 

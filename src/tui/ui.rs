@@ -161,6 +161,16 @@ fn header_line3(app: &App, tc: &ThemeColors) -> Line<'static> {
     spans.extend(cpu_bar(s.cpu_pct, 20, tc));
     spans.push(styled("  Mem ", tc.muted, false));
     spans.extend(mem_bar(s.mem_used_mb, s.mem_total_mb, s.mem_pct, 20, tc));
+    spans.push(styled("  Net ", tc.muted, false));
+    spans.push(styled(
+        &format!(
+            "↓{}/s ↑{}/s",
+            fmt_bytes_short(s.net.rx_bytes_per_sec),
+            fmt_bytes_short(s.net.tx_bytes_per_sec),
+        ),
+        tc.fg,
+        false,
+    ));
     Line::from(spans)
 }
 
@@ -524,6 +534,18 @@ fn styled(text: &str, color: ratatui::style::Color, bold: bool) -> Span<'static>
             s
         },
     )
+}
+
+fn fmt_bytes_short(bps: f64) -> String {
+    if bps >= 1_000_000_000.0 {
+        format!("{:.1}G", bps / 1_000_000_000.0)
+    } else if bps >= 1_000_000.0 {
+        format!("{:.1}M", bps / 1_000_000.0)
+    } else if bps >= 1_000.0 {
+        format!("{:.1}K", bps / 1_000.0)
+    } else {
+        format!("{:.0}B", bps)
+    }
 }
 
 fn format_bytes(bps: f64) -> String {

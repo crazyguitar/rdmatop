@@ -1,3 +1,4 @@
+mod net;
 mod netlink;
 mod rdma;
 mod stat;

@@ -49,7 +49,7 @@ impl<'a> Nla<'a> {
 }
 
 /// Iterator over netlink attributes in a byte buffer.
-pub struct NlaIter<'a>(&'a [u8]);
+pub struct NlaIter<'a>(pub(crate) &'a [u8]);
 
 impl<'a> Iterator for NlaIter<'a> {
     type Item = Nla<'a>;
@@ -101,6 +101,12 @@ impl NlMsgBuilder {
         let len = self.buf.len() as u32;
         self.buf[0..4].copy_from_slice(&len.to_ne_bytes());
         self.buf
+    }
+
+    /// Append raw bytes (e.g. for ifinfomsg struct payload).
+    pub fn put_raw(mut self, data: &[u8]) -> Self {
+        self.buf.extend_from_slice(data);
+        self
     }
 }
 
@@ -160,9 +166,9 @@ pub struct NlSocket {
 }
 
 impl NlSocket {
-    /// Open a new `NETLINK_RDMA` socket and bind it.
-    pub fn open() -> io::Result<Self> {
-        let fd = unsafe { libc::socket(libc::AF_NETLINK, libc::SOCK_RAW, NETLINK_RDMA) };
+    /// Open a netlink socket for the given protocol and bind it.
+    pub fn open(proto: i32) -> io::Result<Self> {
+        let fd = unsafe { libc::socket(libc::AF_NETLINK, libc::SOCK_RAW, proto) };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -225,6 +231,26 @@ impl NlSocket {
             }
         }
     }
+}
+
+/// Send a request and collect all parsed responses until DONE or ERROR.
+pub fn collect_responses<T>(
+    sock: &NlSocket,
+    msg: Vec<u8>,
+    parse: fn(&NlMsg) -> Option<T>,
+) -> io::Result<Vec<T>> {
+    let mut results = Vec::new();
+    for buf in sock.request(msg)? {
+        for nlmsg in NlMsgIter::new(&buf) {
+            if nlmsg.is_done() || nlmsg.is_error() {
+                continue;
+            }
+            if let Some(item) = parse(&nlmsg) {
+                results.push(item);
+            }
+        }
+    }
+    Ok(results)
 }
 
 impl Drop for NlSocket {
