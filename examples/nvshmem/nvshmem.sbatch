@@ -11,9 +11,11 @@ export LD_LIBRARY_PATH=/opt/nvshmem/lib:/opt/amazon/ofi-nccl/lib:/opt/nccl/build
 export FI_PROVIDER=efa
 export FI_EFA_USE_DEVICE_RDMA=1
 export FI_EFA_FORK_SAFE=1
+export FI_EFA_ENABLE_SHM_TRANSFER=0
 export NVSHMEMTEST_USE_MPI_LAUNCHER=1
 export NVSHMEM_REMOTE_TRANSPORT=libfabric
 export NVSHMEM_LIBFABRIC_PROVIDER=efa
+export NVSHMEM_DISABLE_CUDA_VMM=1
 export NVIDIA_VISIBLE_DEVICES=all
 export CUDA_VISIBLE_DEVICES=\$SLURM_LOCALID
 $@
