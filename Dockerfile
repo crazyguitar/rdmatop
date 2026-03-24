@@ -13,7 +13,7 @@ ARG NIXL_VERSION=v1.0.0
 ARG CUDA_ARCH=90
 ARG NCCL_VERSION=v2.29.3-1
 ARG NCCL_TESTS_VERSION=v2.17.9
-ARG NVSHMEM_VERSION=v3.5.21-0
+ARG NVSHMEM_VERSION=v3.6.5-0
 
 RUN apt-get update -y && apt-get upgrade -y
 RUN apt-get remove -y --allow-change-held-packages \
