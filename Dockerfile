@@ -14,6 +14,9 @@ ARG CUDA_ARCH=90
 ARG NCCL_VERSION=v2.29.3-1
 ARG NCCL_TESTS_VERSION=v2.17.9
 ARG NVSHMEM_VERSION=v3.6.5-0
+ARG VLLM_VERSION=0.15.1
+ARG DEEPGEMM_VERSION=v2.1.1.post3
+ARG PPLX_KERNELS_COMMIT=12cecfd
 
 RUN apt-get update -y && apt-get upgrade -y
 RUN apt-get remove -y --allow-change-held-packages \
@@ -176,7 +179,8 @@ RUN git clone -b ${NCCL_TESTS_VERSION} https://github.com/NVIDIA/nccl-tests.git 
 ENV NVSHMEM_DIR=/opt/nvshmem
 ENV NVSHMEM_HOME=/opt/nvshmem
 
-RUN git clone --depth 1 --branch ${NVSHMEM_VERSION} https://github.com/NVIDIA/nvshmem.git /nvshmem \
+#RUN git clone --depth 1 --branch ${NVSHMEM_VERSION} https://github.com/NVIDIA/nvshmem.git /nvshmem \
+RUN git clone --depth 1 --branch "hotfix/efa-rx-round-robin" https://github.com/crazyguitar/nvshmem.git /nvshmem \
     && cd /nvshmem \
     && mkdir -p build && cd build \
     && cmake -DNVSHMEM_PREFIX=/opt/nvshmem \
@@ -198,7 +202,22 @@ RUN git clone --depth 1 --branch ${NVSHMEM_VERSION} https://github.com/NVIDIA/nv
        -DLIBFABRIC_HOME=/opt/amazon/efa \
        -G Ninja .. \
     && ninja -j $(nproc) \
-    && ninja install
+    && ninja install \
+    && echo /opt/nvshmem/lib > /etc/ld.so.conf.d/nvshmem.conf && ldconfig
+
+## Add nvshmem::nvshmem alias target (source builds only export nvshmem::nvshmem_host/device)
+RUN echo 'add_library(nvshmem::nvshmem INTERFACE IMPORTED)' >> /opt/nvshmem/lib/cmake/nvshmem/NVSHMEMConfig.cmake \
+    && echo 'target_link_libraries(nvshmem::nvshmem INTERFACE nvshmem::nvshmem_host nvshmem::nvshmem_device)' >> /opt/nvshmem/lib/cmake/nvshmem/NVSHMEMConfig.cmake
+
+###################################################
+## Install nvshmem4py from source
+RUN pip3 install --break-system-packages --no-cache-dir Cython numpy packaging \
+    && touch /nvshmem/nvshmem4py/requirements.txt \
+    && cd /nvshmem/nvshmem4py \
+    && NVSHMEM_HOME=/opt/nvshmem \
+       CUDA_HOME=/usr/local/cuda \
+       CPATH=/usr/local/cuda/include:${CPATH:-} \
+       pip3 install --break-system-packages --no-build-isolation .
 
 ENV LD_LIBRARY_PATH=/opt/amazon/pmix/lib:/opt/nvshmem/lib:$LD_LIBRARY_PATH
 ENV PATH=/opt/nvshmem/bin:$PATH
@@ -222,3 +241,42 @@ ENV PMIX_MCA_gds=hash
 
 ## Set LD_PRELOAD for NCCL library
 ENV LD_PRELOAD=/opt/nccl/build/lib/libnccl.so
+
+# EFA settings
+ENV FI_PROVIDER=efa
+ENV FI_EFA_USE_DEVICE_RDMA=1
+ENV FI_EFA_FORK_SAFE=1
+ENV RDMAV_FORK_SAFE=1
+
+# vLLM settings
+ENV VLLM_RPC_TIMEOUT=3600000
+ENV VLLM_ENGINE_READY_TIMEOUT_S=3600
+ENV VLLM_USE_DEEP_GEMM=1
+ENV DG_JIT_CACHE_DIR=/tmp
+
+# NVSHMEM settings
+ENV NVSHMEM_DISABLE_CUDA_VMM=1
+
+###################################################
+## Install vLLM
+RUN pip3 install --break-system-packages --no-cache-dir vllm==${VLLM_VERSION}
+
+###################################################
+## Install DeepGEMM (requires torch from vLLM)
+RUN git clone --recursive -b ${DEEPGEMM_VERSION} https://github.com/deepseek-ai/DeepGEMM.git /tmp/deepgemm \
+    && cd /tmp/deepgemm \
+    && python3 setup.py bdist_wheel \
+    && pip3 install --break-system-packages dist/*.whl \
+    && rm -rf /tmp/deepgemm
+
+###################################################
+## Install pplx-kernels
+## ref: https://github.com/perplexityai/pplx-kernels
+RUN git clone https://github.com/ppl-ai/pplx-kernels.git /opt/pplx-kernels \
+    && cd /opt/pplx-kernels \
+    && git checkout ${PPLX_KERNELS_COMMIT} \
+    && sed -i 's|"-DCMAKE_PREFIX_PATH=" + _get_torch_cmake_prefix_path()|"-DCMAKE_PREFIX_PATH=" + _get_torch_cmake_prefix_path() + ";/opt/nvshmem/lib/cmake"|' setup.py \
+    && TORCH_CUDA_ARCH_LIST="9.0a+PTX" \
+       python3 setup.py bdist_wheel \
+    && pip3 install --break-system-packages dist/*.whl \
+    && pip3 install --break-system-packages --no-cache-dir pytest
