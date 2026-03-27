@@ -1,19 +1,25 @@
 # PPLX Kernels
 
-[pplx-kernels](https://github.com/perplexityai/pplx-kernels) provides
+[pplx-kernels](https://github.com/ppl-ai/pplx-kernels) provides
 high-performance MoE dispatch/combine kernels with support for NVLink,
-IBGDA, IBRC, and EFA transport layers. The following examples run the
-pplx-kernels all-to-all benchmark on a Slurm cluster. You can use
-rdmatop on the compute nodes to observe RDMA network flow during the
-benchmarks.
+IBGDA, IBRC, and EFA transport layers. Although Perplexity AI has deprecated
+this older kernel in favor of [pplx-garden](https://github.com/perplexityai/pplx-garden),
+we still use it here to demonstrate monitoring RDMA traffic and NVSHMEM
+throughput with rdmatop. This example runs the pplx-kernels all-to-all
+benchmark on a Slurm cluster with a dedicated Docker image layered on top
+of the base `efa` image (adding vLLM, DeepGEMM, and pplx-kernels).
+Use rdmatop on the compute nodes to observe RDMA network flow during
+the benchmarks.
 
 ## Build
 
-The Dockerfile in this repo includes pplx-kernels. Build the container
-image and convert it to an enroot squashfs for `pplx.sbatch`:
+First build the base image, then build the pplx image on top of it.
+The pplx image adds vLLM (< v0.16), DeepGEMM, and pplx-kernels:
 
 ```bash
-cd rdmatop && make docker
+cd rdmatop
+make docker        # build the base efa image
+make pplx-docker   # build the pplx image (uses efa:latest as base)
 ```
 
 ## Examples

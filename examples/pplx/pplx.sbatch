@@ -3,7 +3,7 @@
 set -exo pipefail
 
 DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
-SQSH="${SQSH:-${DIR}/../../efa+latest.sqsh}"
+SQSH="${SQSH:-${DIR}/../../pplx+latest.sqsh}"
 NTASKS_PER_NODE="${NTASKS_PER_NODE:-1}"
 MASTER_ADDR="$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)"
 MASTER_ADDR="$(getent hosts $MASTER_ADDR | awk '{print $1}')"
@@ -30,7 +30,7 @@ export MASTER_PORT=29500
 
 cd /opt/pplx-kernels
 
-NUM_REPEAT=\${NUM_REPEAT:-20}
+NUM_REPEAT=\${NUM_REPEAT:-256}
 sed -i "s/num_repeat = 20/num_repeat = \$NUM_REPEAT/" tests/bench_all_to_all.py
 
 $@
