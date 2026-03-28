@@ -17,22 +17,30 @@ jobs:
           - aarch64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v4
-      - name: Install cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Install cross and cargo-deb
+        run: |
+          cargo install cross --git https://github.com/cross-rs/cross
+          cargo install cargo-deb
 
       - name: Build
         run: cross build --release --target ${{ matrix.target }}
 
-      - name: Package
+      - name: Package tarball
         run: |
           tar czf rdmatop-${{ github.ref_name }}-${{ matrix.target }}.tar.gz \
             -C target/${{ matrix.target }}/release rdmatop
+
+      - name: Package deb
+        run: cargo deb --no-build --target ${{ matrix.target }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: rdmatop-${{ matrix.target }}
-          path: rdmatop-*.tar.gz
+          path: |
+            rdmatop-*.tar.gz
+            target/${{ matrix.target }}/debian/*.deb
 
   release:
     needs: build
@@ -46,5 +54,7 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: rdmatop-*.tar.gz
+          files: |
+            rdmatop-*.tar.gz
+            **/*.deb
           generate_release_notes: true
