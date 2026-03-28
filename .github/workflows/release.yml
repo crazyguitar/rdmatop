@@ -32,7 +32,7 @@ jobs:
             -C target/${{ matrix.target }}/release rdmatop
 
       - name: Package deb
-        run: cargo deb --no-build --target ${{ matrix.target }}
+        run: cargo deb --no-build --no-strip --target ${{ matrix.target }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

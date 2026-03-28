@@ -8,6 +8,9 @@ repository = "https://github.com/crazyguitar/rdmatop"
 keywords = ["rdma", "efa", "networking", "tui", "infiniband"]
 categories = ["network-programming", "command-line-utilities"]
 
+[profile.release]
+strip = true
+
 [package.metadata.deb]
 maintainer = "chang-ning <spiderpower02@gmail.com>"
 section = "net"
