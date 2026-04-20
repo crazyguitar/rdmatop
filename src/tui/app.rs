@@ -1,6 +1,7 @@
 use super::theme::Theme;
 use crate::net::{self, IfStats, NetRate};
 use crate::stat::{self, PortStat};
+use std::collections::VecDeque;
 use std::time::Instant;
 
 use std::collections::HashMap;
@@ -26,6 +27,119 @@ pub struct CounterRate {
     pub is_bytes: bool,
 }
 
+/// Rolling average calculator: stores recent PortThroughput samples per device
+/// and computes the mean over a configurable window.
+pub struct RollingAvgState {
+    /// Per-device key "dev_name/port" → ring buffer of samples
+    samples: HashMap<String, VecDeque<PortThroughput>>,
+    /// Window size in seconds (each sample ≈ 1s)
+    pub window_secs: usize,
+}
+
+pub const ROLLING_AVG_DEFAULT_WINDOW: usize = 30;
+const ROLLING_AVG_MIN_WINDOW: usize = 5;
+const ROLLING_AVG_MAX_WINDOW: usize = 300;
+
+impl RollingAvgState {
+    pub fn new(window_secs: usize) -> Self {
+        Self {
+            samples: HashMap::new(),
+            window_secs,
+        }
+    }
+
+    /// Push a new set of throughput samples (called once per refresh).
+    pub fn push(&mut self, throughputs: &[PortThroughput]) {
+        for t in throughputs {
+            let key = format!("{}/{}", t.dev_name, t.port);
+            let buf = self
+                .samples
+                .entry(key)
+                .or_insert_with(|| VecDeque::with_capacity(self.window_secs + 1));
+            if buf.len() >= self.window_secs {
+                buf.pop_front();
+            }
+            buf.push_back(t.clone());
+        }
+    }
+
+    /// Compute averaged throughput for all devices currently tracked.
+    pub fn averages(&self) -> Vec<PortThroughput> {
+        self.samples
+            .values()
+            .filter_map(|buf| {
+                if buf.is_empty() {
+                    return None;
+                }
+                let n = buf.len() as f64;
+                let first = buf.front().unwrap();
+                let mut avg = PortThroughput {
+                    dev_name: first.dev_name.clone(),
+                    port: first.port,
+                    tx_gbps: buf.iter().map(|s| s.tx_gbps).sum::<f64>() / n,
+                    rx_gbps: buf.iter().map(|s| s.rx_gbps).sum::<f64>() / n,
+                    tx_pkts_per_sec: buf.iter().map(|s| s.tx_pkts_per_sec).sum::<f64>() / n,
+                    rx_pkts_per_sec: buf.iter().map(|s| s.rx_pkts_per_sec).sum::<f64>() / n,
+                    rx_drops_per_sec: buf.iter().map(|s| s.rx_drops_per_sec).sum::<f64>() / n,
+                    counter_rates: Vec::new(),
+                };
+                // Average each counter rate
+                if let Some(template) = buf.back() {
+                    avg.counter_rates = template
+                        .counter_rates
+                        .iter()
+                        .map(|cr| {
+                            let sum_rate: f64 = buf
+                                .iter()
+                                .filter_map(|s| {
+                                    s.counter_rates
+                                        .iter()
+                                        .find(|r| r.name == cr.name)
+                                        .map(|r| r.rate)
+                                })
+                                .sum();
+                            let sum_delta: u64 = buf
+                                .iter()
+                                .filter_map(|s| {
+                                    s.counter_rates
+                                        .iter()
+                                        .find(|r| r.name == cr.name)
+                                        .map(|r| r.delta)
+                                })
+                                .sum();
+                            CounterRate {
+                                name: cr.name.clone(),
+                                delta: sum_delta / buf.len() as u64,
+                                rate: sum_rate / n,
+                                is_bytes: cr.is_bytes,
+                            }
+                        })
+                        .collect();
+                }
+                Some(avg)
+            })
+            .collect()
+    }
+
+    pub fn sample_count(&self) -> usize {
+        self.samples.values().map(|b| b.len()).max().unwrap_or(0)
+    }
+
+    pub fn increase_window(&mut self) {
+        self.window_secs = (self.window_secs + 5).min(ROLLING_AVG_MAX_WINDOW);
+    }
+
+    pub fn decrease_window(&mut self) {
+        self.window_secs = self.window_secs.saturating_sub(5).max(ROLLING_AVG_MIN_WINDOW);
+        // Trim existing buffers to new window size
+        for buf in self.samples.values_mut() {
+            while buf.len() > self.window_secs {
+                buf.pop_front();
+            }
+        }
+    }
+}
+
 pub struct App {
     pub should_quit: bool,
     pub throughputs: Vec<PortThroughput>,
@@ -43,6 +157,8 @@ pub struct App {
     prev_ifstats: Vec<IfStats>,
     prev_time: Instant,
     pub elapsed: f64,
+    pub rolling_avg: RollingAvgState,
+    pub show_rolling_avg: bool,
 }
 
 const HISTORY_LEN: usize = 60;
@@ -104,6 +220,8 @@ impl App {
             prev_ifstats: ifstats,
             prev_time: Instant::now(),
             elapsed: 1.0,
+            rolling_avg: RollingAvgState::new(ROLLING_AVG_DEFAULT_WINDOW),
+            show_rolling_avg: false,
         }
     }
 
@@ -128,6 +246,7 @@ impl App {
         self.clamp_selection();
         self.update_history();
         self.refresh_processes();
+        self.rolling_avg.push(&self.throughputs);
         self.sysinfo = read_sysinfo(net_rate);
         if self.cpu_history.len() >= HISTORY_LEN {
             self.cpu_history.remove(0);
@@ -185,6 +304,33 @@ impl App {
 
     pub fn cycle_theme(&mut self) {
         self.theme = self.theme.next();
+    }
+
+    pub fn toggle_rolling_avg(&mut self) {
+        self.show_rolling_avg = !self.show_rolling_avg;
+    }
+
+    pub fn increase_avg_window(&mut self) {
+        self.rolling_avg.increase_window();
+    }
+
+    pub fn decrease_avg_window(&mut self) {
+        self.rolling_avg.decrease_window();
+    }
+
+    /// Returns the throughputs to display: rolling avg if enabled, otherwise instant.
+    pub fn display_throughputs(&self) -> Vec<PortThroughput> {
+        if self.show_rolling_avg {
+            let mut avgs = self.rolling_avg.averages();
+            // Sort to match the order of self.throughputs
+            avgs.sort_by(|a, b| {
+                let key = |t: &PortThroughput| (t.dev_name.clone(), t.port);
+                key(a).cmp(&key(b))
+            });
+            avgs
+        } else {
+            self.throughputs.clone()
+        }
     }
 
     pub fn selected_throughput(&self) -> Option<&PortThroughput> {

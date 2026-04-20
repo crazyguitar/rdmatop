@@ -40,6 +40,9 @@ fn handle_normal_mode(app: &mut App, key: KeyCode) {
         KeyCode::Down | KeyCode::Char('j') => app.move_down(),
         KeyCode::Enter => app.toggle_detail(),
         KeyCode::Char('t') => app.cycle_theme(),
+        KeyCode::Char('a') => app.toggle_rolling_avg(),
+        KeyCode::Char('+') | KeyCode::Char('=') => app.increase_avg_window(),
+        KeyCode::Char('-') => app.decrease_avg_window(),
         _ => {}
     }
 }
@@ -51,6 +54,9 @@ fn handle_detail_mode(app: &mut App, key: KeyCode) {
         KeyCode::Up | KeyCode::Char('k') => app.detail_scroll_up(),
         KeyCode::Down | KeyCode::Char('j') => app.detail_scroll_down(app.detail_max_scroll),
         KeyCode::Char('t') => app.cycle_theme(),
+        KeyCode::Char('a') => app.toggle_rolling_avg(),
+        KeyCode::Char('+') | KeyCode::Char('=') => app.increase_avg_window(),
+        KeyCode::Char('-') => app.decrease_avg_window(),
         _ => {}
     }
 }

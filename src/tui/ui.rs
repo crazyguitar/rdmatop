@@ -15,6 +15,9 @@ const HELP_KEYS: &[(&str, &str)] = &[
     ("Enter", "Toggle detail panel"),
     ("Esc", "Close detail / quit"),
     ("t", "Cycle theme"),
+    ("a", "Toggle rolling average"),
+    ("+ / =", "Increase avg window (+5s)"),
+    ("-", "Decrease avg window (-5s)"),
     ("h", "Toggle this help"),
     ("q", "Quit"),
     ("", ""),
@@ -84,14 +87,26 @@ fn header_line1(app: &App, tc: &ThemeColors) -> Line<'static> {
 }
 
 fn header_line2(app: &App, tc: &ThemeColors) -> Line<'static> {
-    let n = app.throughputs.len();
-    let total_tx: f64 = app.throughputs.iter().map(|t| t.tx_gbps).sum();
-    let total_rx: f64 = app.throughputs.iter().map(|t| t.rx_gbps).sum();
-    let total_drops: f64 = app.throughputs.iter().map(|t| t.rx_drops_per_sec).sum();
+    let display = app.display_throughputs();
+    let n = display.len();
+    let total_tx: f64 = display.iter().map(|t| t.tx_gbps).sum();
+    let total_rx: f64 = display.iter().map(|t| t.rx_gbps).sum();
+    let total_drops: f64 = display.iter().map(|t| t.rx_drops_per_sec).sum();
     let drop_color = if total_drops > 0.0 {
         tc.error
     } else {
         tc.muted
+    };
+
+    let avg_label = if app.show_rolling_avg {
+        format!(
+            " │ avg:{}s({}/{})",
+            app.rolling_avg.window_secs,
+            app.rolling_avg.sample_count(),
+            app.rolling_avg.window_secs,
+        )
+    } else {
+        String::new()
     };
 
     Line::from(vec![
@@ -111,6 +126,7 @@ fn header_line2(app: &App, tc: &ThemeColors) -> Line<'static> {
             tc.muted,
             false,
         ),
+        styled(&avg_label, tc.accent, false),
     ])
 }
 
@@ -215,6 +231,16 @@ fn throughput_to_row(t: &PortThroughput, tc: &ThemeColors) -> Row<'static> {
 }
 
 fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
+    let display = app.display_throughputs();
+    let title = if app.show_rolling_avg {
+        format!(
+            " RDMA Throughput (avg {}s) ",
+            app.rolling_avg.window_secs
+        )
+    } else {
+        " RDMA Throughput ".to_string()
+    };
+
     let header = Row::new([
         "Device", "Port", "TX ▏", "TX Gbps", "RX ▏", "RX Gbps", "TX pps", "RX pps", "Drops/s",
     ])
@@ -225,8 +251,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
     )
     .height(1);
 
-    let rows: Vec<Row> = app
-        .throughputs
+    let rows: Vec<Row> = display
         .iter()
         .map(|t| throughput_to_row(t, tc))
         .collect();
@@ -249,7 +274,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(tc.border))
-                .title(" RDMA Throughput ")
+                .title(title)
                 .title_style(Style::default().fg(tc.accent)),
         )
         .row_highlight_style(
@@ -260,7 +285,7 @@ fn draw_table(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
         .highlight_symbol("▶ ");
 
     let mut state = TableState::default();
-    if !app.throughputs.is_empty() {
+    if !display.is_empty() {
         state.select(Some(app.selected_row));
     }
     frame.render_stateful_widget(table, area, &mut state);
@@ -307,8 +332,10 @@ fn build_detail_lines(
     procs: &[&crate::stat::ProcessRdmaInfo],
     history: Option<&super::app::DeviceHistory>,
     tc: &ThemeColors,
+    show_avg: bool,
+    avg_window: usize,
 ) -> Vec<Line<'static>> {
-    let mut lines = build_device_header(t, history, tc);
+    let mut lines = build_device_header(t, history, tc, show_avg, avg_window);
     append_active_counters(&mut lines, t, tc);
     append_process_table(&mut lines, procs, tc);
     lines
@@ -318,16 +345,24 @@ fn build_device_header(
     t: &PortThroughput,
     history: Option<&super::app::DeviceHistory>,
     tc: &ThemeColors,
+    show_avg: bool,
+    avg_window: usize,
 ) -> Vec<Line<'static>> {
     let spark_w = 30;
     let (tx_spark, rx_spark) = match history {
         Some(h) => (sparkline_str(&h.tx, spark_w), sparkline_str(&h.rx, spark_w)),
         None => (" ".repeat(spark_w), " ".repeat(spark_w)),
     };
+    let mode_label = if show_avg {
+        format!("  [avg {}s]", avg_window)
+    } else {
+        String::new()
+    };
     vec![
         Line::from(vec![
             styled(" Device: ", tc.muted, false),
             styled(&format!("{}/{}", t.dev_name, t.port), tc.accent, true),
+            styled(&mode_label, tc.accent, false),
         ]),
         Line::from(vec![
             styled(" TX: ", tc.muted, false),
@@ -399,28 +434,38 @@ fn process_line(p: &crate::stat::ProcessRdmaInfo, tc: &ThemeColors) -> Line<'sta
 }
 
 fn draw_detail(frame: &mut Frame, app: &mut App, area: Rect, tc: &ThemeColors) {
-    let Some(t) = app.selected_throughput().cloned() else {
-        frame.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(tc.border))
-                .title(" Detail "),
-            area,
-        );
-        return;
+    let display = app.display_throughputs();
+    let t = match display.get(app.selected_row).cloned() {
+        Some(t) => t,
+        None => {
+            frame.render_widget(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(tc.border))
+                    .title(" Detail "),
+                area,
+            );
+            return;
+        }
     };
 
     let history = app.history.get(&t.dev_name);
     let procs = app.selected_device_processes();
-    let lines = build_detail_lines(&t, &procs, history, tc);
+    let lines = build_detail_lines(&t, &procs, history, tc, app.show_rolling_avg, app.rolling_avg.window_secs);
 
     let visible = area.height.saturating_sub(2);
     app.detail_max_scroll = (lines.len() as u16).saturating_sub(visible);
 
+    let title = if app.show_rolling_avg {
+        format!(" {} (avg {}s) ", t.dev_name, app.rolling_avg.window_secs)
+    } else {
+        format!(" {} ", t.dev_name)
+    };
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(tc.border))
-        .title(format!(" {} ", t.dev_name))
+        .title(title)
         .title_style(Style::default().fg(tc.accent).add_modifier(Modifier::BOLD));
 
     frame.render_widget(
@@ -466,6 +511,11 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
     } else {
         "Enter:detail"
     };
+    let avg_hint = if app.show_rolling_avg {
+        format!("  a:avg[ON {}s]  +/-:window", app.rolling_avg.window_secs)
+    } else {
+        "  a:avg".to_string()
+    };
     let line = Line::from(vec![
         Span::styled(
             " NORMAL ",
@@ -475,7 +525,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect, tc: &ThemeColors) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(" ↑↓/jk:nav  {}  t:theme  h:help  q:quit", hint),
+            format!(" ↑↓/jk:nav  {}  t:theme  h:help  q:quit{}", hint, avg_hint),
             Style::default().fg(tc.muted),
         ),
     ]);
