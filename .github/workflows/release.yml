@@ -35,7 +35,7 @@ jobs:
         run: cargo deb --no-build --no-strip --target ${{ matrix.target }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rdmatop-${{ matrix.target }}
           path: |
