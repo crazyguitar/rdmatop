@@ -84,10 +84,8 @@ fn handle_window_input(app: &mut App, key: KeyCode) {
         KeyCode::Backspace => {
             app.window_input_buf.pop();
         }
-        KeyCode::Char(c) if c.is_ascii_digit() => {
-            if app.window_input_buf.len() < 4 {
-                app.window_input_buf.push(c);
-            }
+        KeyCode::Char(c) if c.is_ascii_digit() && app.window_input_buf.len() < 4 => {
+            app.window_input_buf.push(c);
         }
         _ => {}
     }
