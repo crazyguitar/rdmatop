@@ -3,8 +3,8 @@ Section: net
 Priority: optional
 Maintainer: Chang Ning Tsai <spiderpower02@gmail.com>
 Build-Depends: debhelper-compat (= 13),
-               cargo,
-               rustc (>= 1.75)
+               cargo-1.91,
+               rustc-1.91
 Standards-Version: 4.6.2
 Homepage: https://github.com/crazyguitar/rdmatop
 Vcs-Git: https://github.com/crazyguitar/rdmatop.git

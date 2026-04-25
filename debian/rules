@@ -2,6 +2,9 @@
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 export CARGO_HOME = $(CURDIR)/.cargo-home
+# Use the versioned Rust toolchain so plain `cargo`/`rustc` resolve to 1.91
+# (Edition 2024 in transitive deps requires >= 1.85; noble's default cargo is 1.75).
+export PATH := /usr/lib/rust-1.91/bin:$(PATH)
 
 %:
 	dh $@
