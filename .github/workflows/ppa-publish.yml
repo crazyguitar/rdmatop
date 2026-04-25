@@ -74,6 +74,10 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends \
             devscripts debhelper dput build-essential cargo rustc gnupg jq
+          # Confirm we will use apt's cargo, which writes lockfile v3
+          # (Launchpad's noble builders ship apt's cargo only).
+          /usr/bin/cargo --version
+          /usr/bin/rustc --version
 
       - name: Import GPG signing key
         env:
@@ -89,7 +93,10 @@ jobs:
       - name: Vendor Rust dependencies
         run: |
           set -eu
-          cargo vendor vendor/ > /dev/null
+          # Use apt's cargo (v1.75 on noble) so the generated Cargo.lock is v3
+          # and remains parseable by Launchpad's noble cargo.
+          rm -f Cargo.lock
+          /usr/bin/cargo vendor vendor/ > /dev/null
           mkdir -p .cargo
           cat > .cargo/config.toml <<'EOF'
           [source.crates-io]
@@ -98,6 +105,7 @@ jobs:
           [source.vendored-sources]
           directory = "vendor"
           EOF
+          head -2 Cargo.lock
 
       - name: Regenerate debian/changelog
         run: |
