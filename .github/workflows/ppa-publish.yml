@@ -115,6 +115,27 @@ jobs:
               "Release ${VERSION} for ${SERIES}."
           head -n 5 debian/changelog
 
+      - name: Create upstream orig tarball
+        run: |
+          set -eu
+          # 3.0 (quilt) source format requires ../rdmatop_<upstream>.orig.tar.gz.
+          # We synthesise one from the current source tree (which already
+          # contains vendor/ and .cargo/ — Launchpad's builders need both for
+          # offline cargo builds). debian/ and VCS metadata are excluded.
+          PKG_DIR="rdmatop-${VERSION}"
+          mkdir -p "/tmp/${PKG_DIR}"
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='debian' \
+            --exclude='.cargo-home' \
+            --exclude='target' \
+            --exclude='out' \
+            ./ "/tmp/${PKG_DIR}/"
+          tar -czf "../rdmatop_${VERSION}.orig.tar.gz" -C /tmp "${PKG_DIR}"
+          rm -rf "/tmp/${PKG_DIR}"
+          ls -la ../rdmatop_*.orig.tar.gz
+
       - name: Build source package
         run: |
           set -eu
