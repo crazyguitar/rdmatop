@@ -112,22 +112,29 @@ jobs:
       - name: Build signed source package
         run: |
           set -eu
-          debuild -S -sa --no-lintian -k"$KEY_ID"
+          debuild --no-lintian -- -S -sa -k"$KEY_ID"
           ls -la ../
+
+      - name: Stage source artifacts
+        if: always()
+        run: |
+          set -eu
+          mkdir -p out
+          cp -v ../rdmatop_*.dsc       out/ 2>/dev/null || true
+          cp -v ../rdmatop_*.tar.*     out/ 2>/dev/null || true
+          cp -v ../rdmatop_*.changes   out/ 2>/dev/null || true
+          cp -v ../rdmatop_*.buildinfo out/ 2>/dev/null || true
+          ls -la out/
 
       - name: Upload to Launchpad PPA
         run: |
           set -eu
-          dput "$PPA" "../rdmatop_${VERSION}-1ppa1~${SERIES}1_source.changes"
+          dput "$PPA" "out/rdmatop_${VERSION}-1ppa1~${SERIES}1_source.changes"
 
       - name: Stash source artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ppa-source-${{ matrix.series }}
-          path: |
-            ../rdmatop_*.dsc
-            ../rdmatop_*.tar.*
-            ../rdmatop_*.changes
-            ../rdmatop_*.buildinfo
+          path: out/
           if-no-files-found: warn
