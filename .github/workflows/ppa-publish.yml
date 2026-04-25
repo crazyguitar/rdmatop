@@ -140,6 +140,14 @@ jobs:
           rm -rf "/tmp/${PKG_DIR}"
           ls -la ../rdmatop_*.orig.tar.gz
 
+      - name: Strip CI metadata from working tree
+        run: |
+          set -eu
+          # The orig tarball excludes .github/, so the working tree must too,
+          # otherwise dpkg-source -b reports "unexpected upstream changes".
+          # .git/ is auto-ignored by dpkg-source so it can stay.
+          rm -rf .github
+
       - name: Build source package
         run: |
           set -eu
