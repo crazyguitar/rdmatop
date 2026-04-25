@@ -1,0 +1,133 @@
+name: Publish to Launchpad PPA
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 0.1.6). Defaults to the tag."
+        required: false
+      series:
+        description: "Comma-separated Ubuntu series (e.g. noble,jammy). Default: noble"
+        required: false
+        default: "noble"
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      series_matrix: ${{ steps.v.outputs.series_matrix }}
+    env:
+      INPUT_VERSION: ${{ inputs.version }}
+      INPUT_SERIES: ${{ inputs.series }}
+      REF_NAME: ${{ github.ref_name }}
+    steps:
+      - id: v
+        run: |
+          set -eu
+          if [ -n "${INPUT_VERSION:-}" ]; then
+            VERSION="$INPUT_VERSION"
+          else
+            VERSION="${REF_NAME#v}"
+          fi
+          # Strict version sanity check: digits and dots only, plus optional suffix.
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+(\.[0-9]+){0,3}([a-zA-Z0-9.+~-]*)$'; then
+            echo "Refusing unsafe version string: $VERSION" >&2
+            exit 1
+          fi
+          SERIES="${INPUT_SERIES:-noble}"
+          # Whitelist series names (alnum only) before passing them downstream.
+          MATRIX=$(printf '%s' "$SERIES" \
+            | tr ',' '\n' \
+            | sed 's/^ *//; s/ *$//' \
+            | grep -E '^[a-z][a-z0-9]+$' \
+            | jq -R . | jq -sc .)
+          if [ "$MATRIX" = "[]" ]; then
+            echo "No valid series after whitelist filter: $SERIES" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "series_matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "Publishing version=$VERSION to series=$MATRIX"
+
+  publish:
+    needs: resolve
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        series: ${{ fromJSON(needs.resolve.outputs.series_matrix) }}
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+      SERIES: ${{ matrix.series }}
+      DEBEMAIL: spiderpower02@gmail.com
+      DEBFULLNAME: Chang Ning Tsai
+      PPA: ppa:crazyguitar/rdmatop
+      KEY_ID: ${{ secrets.LAUNCHPAD_GPG_KEY_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            devscripts debhelper dput build-essential cargo rustc gnupg jq
+
+      - name: Import GPG signing key
+        env:
+          LAUNCHPAD_GPG_PRIVATE_KEY: ${{ secrets.LAUNCHPAD_GPG_PRIVATE_KEY }}
+        run: |
+          set -eu
+          mkdir -p ~/.gnupg && chmod 700 ~/.gnupg
+          printf '%s' "$LAUNCHPAD_GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --list-secret-keys --keyid-format=long
+          # Trust the imported key so debuild can use it non-interactively.
+          printf '5\ny\n' | gpg --batch --command-fd 0 --expert --edit-key "$KEY_ID" trust quit || true
+
+      - name: Vendor Rust dependencies
+        run: |
+          set -eu
+          cargo vendor vendor/ > /dev/null
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<'EOF'
+          [source.crates-io]
+          replace-with = "vendored-sources"
+
+          [source.vendored-sources]
+          directory = "vendor"
+          EOF
+
+      - name: Regenerate debian/changelog
+        run: |
+          set -eu
+          rm -f debian/changelog
+          dch --create --package rdmatop \
+              --newversion "${VERSION}-1ppa1~${SERIES}1" \
+              --distribution "$SERIES" \
+              "Release ${VERSION} for ${SERIES}."
+          head -n 5 debian/changelog
+
+      - name: Build signed source package
+        run: |
+          set -eu
+          debuild -S -sa --no-lintian -k"$KEY_ID"
+          ls -la ../
+
+      - name: Upload to Launchpad PPA
+        run: |
+          set -eu
+          dput "$PPA" "../rdmatop_${VERSION}-1ppa1~${SERIES}1_source.changes"
+
+      - name: Stash source artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ppa-source-${{ matrix.series }}
+          path: |
+            ../rdmatop_*.dsc
+            ../rdmatop_*.tar.*
+            ../rdmatop_*.changes
+            ../rdmatop_*.buildinfo
+          if-no-files-found: warn
